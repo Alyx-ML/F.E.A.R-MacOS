@@ -1,0 +1,160 @@
+#
+#  Copyright (C) 2016-2025 Roman Pauer
+#
+#  Permission is hereby granted, free of charge, to any person obtaining a copy of
+#  this software and associated documentation files (the "Software"), to deal in
+#  the Software without restriction, including without limitation the rights to
+#  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+#  of the Software, and to permit persons to whom the Software is furnished to do
+#  so, subject to the following conditions:
+#
+#  The above copyright notice and this permission notice shall be included in all
+#  copies or substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#  SOFTWARE.
+#
+
+import os
+import subprocess
+
+# set help text
+vars = Variables('custom.py')
+vars.Add(BoolVariable('debug', 'Set to build debug version', False))
+vars.Add(BoolVariable('mingw', 'Set to use MinGW instead of default compiler', False))
+vars.Add(EnumVariable('device', 'Set target device', 'none',
+                                 allowed_values=('none', 'pc-windows', 'pc-linux', 'arm-linux', 'gp2x', 'pandora'),
+                                 ignorecase=2))
+env = Environment(variables = vars)
+
+debug = env['debug']
+mingw = env['mingw']
+device = env['device']
+clean = env.GetOption('clean')
+
+if device == 'none':
+    device = 'pc-linux'
+    if env['PLATFORM'] == 'win32':
+        device = 'pc-windows'
+    elif env['PLATFORM'] == 'posix':
+        if os.uname()[4].startswith('arm'):
+            device = 'arm-linux'
+    env['device'] = device
+    print("\nYou didn't set any target device (parameter 'device').")
+    print("'" + device + "' will be used for compiling.\n")
+
+Help(vars.GenerateHelpText(env))
+
+Help("""
+Environment variables:
+  - PATH_INC: paths to find include files
+  - PATH_LIB: paths to find library files
+""")
+
+if mingw:
+    env = Environment(tools = ['mingw'])
+elif env['CC'] == 'cl' and device == 'pc-windows':
+    env = Environment(TARGET_ARCH = 'x86')
+
+# default settings
+if env['CC'] == 'cl':
+    env.Append(CCFLAGS = '/O2 /W3 /D_CRT_SECURE_NO_WARNINGS')
+    if debug:
+        env.Append(CCFLAGS = '/Zi /D__DEBUG__')
+else:
+    env.Append(CCFLAGS = '-O2 -Wall')
+    if debug:
+        env.Append(CCFLAGS = '-g -D__DEBUG__')
+    else:
+        env.Append(LINKFLAGS = '-s')
+
+if 'PATH_INC' in os.environ:
+    env.Append(CPPPATH = os.environ['PATH_INC'].split(os.pathsep))
+if 'PATH_LIB' in os.environ:
+    env.Append(LIBPATH = os.environ['PATH_LIB'].split(os.pathsep))
+
+
+if device == 'pc-windows':
+    if env['CC'] == 'cl':
+        env.Append(CCFLAGS   = '/Dmain=SDL_main /MD',
+                   LINKFLAGS = '/SUBSYSTEM:windows',
+                   LIBS      = ['SDLmain', 'SDL']
+                  )
+    else:
+        env.Append(CCFLAGS   = '-m32 -D_GNU_SOURCE=1 -Dmain=SDL_main',
+                   LINKFLAGS = '-m32 -mwindows',
+                   LIBS      = ['mingw32', 'SDLmain', 'SDL']
+                  )
+elif device == 'pc-linux':
+    env.Append(CCFLAGS   = '-m32',
+               LINKFLAGS = '-m32',
+               LIBS      = ['SDL']
+              )
+elif device == 'arm-linux':
+    env.Append(LIBS = ['SDL'])
+elif device == 'gp2x':
+    compiler_path = '/opt/open2x/gcc-4.1.1-glibc-2.3.6/'
+    compiler_prefix = 'arm-open2x-linux-'
+
+    env['CC']      = compiler_prefix + 'gcc'
+    env['CXX']     = compiler_prefix + 'g++'
+    env['CPPPATH'] = [compiler_path + 'include']
+    env['LIBPATH'] = [compiler_path + 'lib']
+    env['AS']      = compiler_prefix + 'as'
+    env['ENV']['PATH'] = compiler_path + 'bin' + os.pathsep + env['ENV']['PATH']
+    env.Append(CCFLAGS   = '-DGP2X -march=armv4t -mtune=arm920t',
+               LINKFLAGS = '-static -Wl,-z,noexecstack',
+               LIBS      = ['SDL', 'pthread', 'armmem']
+              )
+elif device == 'pandora':
+    compiler_path = os.environ['PNDSDK'] + '/'
+    compiler_prefix = 'pandora-'
+
+    env['CC']      = compiler_prefix + 'gcc'
+    env['CXX']     = compiler_prefix + 'g++'
+    env['CPPPATH'] = [compiler_path + 'usr/include']
+    env['LIBPATH'] = [compiler_path + 'usr/lib']
+    env['AS']      = compiler_prefix + 'as'
+    env['ENV']['PATH'] = compiler_path + 'bin' + os.pathsep + env['ENV']['PATH']
+    env.Append(CCFLAGS   = '-DPANDORA -pipe -march=armv7-a -mcpu=cortex-a8 -mtune=cortex-a8 -mfpu=vfpv3 -mfloat-abi=softfp',
+               LINKFLAGS = '-Wl,-z,noexecstack',
+               LIBS      = ['SDL', 'ts', 'pthread']
+              )
+
+def get_compiler_version(compiler_path, env_path):
+    process = subprocess.Popen([compiler_path, '-dumpversion'], stdout=subprocess.PIPE, env={"PATH": env_path})
+    (stdout, stderr) = process.communicate()
+    if not stdout or stdout.isspace():
+        return None
+    version = stdout.strip().split(b'.')
+    return version
+
+def is_version_ge(version, comparand):
+    if version is None or comparand is None:
+        return False
+
+    for i in range(len(comparand)):
+        if i >= len(version):
+            component = 0
+        else:
+            component = int(version[i])
+        if int(comparand[i]) > component:
+            return False
+        if int(comparand[i]) < component:
+            return True
+    return True
+
+if not clean and env['CC'] != 'cl':
+    compiler_version = get_compiler_version(env['CC'], env['ENV']['PATH'])
+    if is_version_ge(compiler_version, [3, 4]):
+        env.Append(CCFLAGS = '-fno-PIE')
+    if is_version_ge(compiler_version, [6]):
+        env.Append(LINKFLAGS = '-no-pie')
+
+
+env.Program('smk_play', Glob('*.c'))

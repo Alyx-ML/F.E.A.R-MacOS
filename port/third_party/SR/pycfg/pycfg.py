@@ -1,0 +1,1199 @@
+#!/usr/bin/env python3
+# The script also works with python2
+
+#
+#  Copyright (C) 2014-2026 Roman Pauer
+#
+#  Permission is hereby granted, free of charge, to any person obtaining a copy of
+#  this software and associated documentation files (the "Software"), to deal in
+#  the Software without restriction, including without limitation the rights to
+#  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+#  of the Software, and to permit persons to whom the Software is furnished to do
+#  so, subject to the following conditions:
+#
+#  The above copyright notice and this permission notice shall be included in all
+#  copies or substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#  SOFTWARE.
+#
+
+import os
+import datetime
+import sys
+import re
+
+try:
+    import pygtk
+    pygtk.require('2.0')
+    import gtk
+
+    GTK_WINDOW_TOPLEVEL = gtk.WINDOW_TOPLEVEL
+    GTK_POS_LEFT = gtk.POS_LEFT
+    GTK_DIALOG_MODAL = gtk.DIALOG_MODAL
+    GTK_MESSAGE_QUESTION = gtk.MESSAGE_QUESTION
+    GTK_BUTTONS_YES_NO = gtk.BUTTONS_YES_NO
+    GTK_RESPONSE_YES = gtk.RESPONSE_YES
+    GTK_RESPONSE_CANCEL = gtk.RESPONSE_CANCEL
+    GTK_RESPONSE_OK = gtk.RESPONSE_OK
+    GTK_FILE_CHOOSER_ACTION_OPEN = gtk.FILE_CHOOSER_ACTION_OPEN
+    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER = gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER
+    GTK_SHADOW_NONE = gtk.SHADOW_NONE
+except:
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk as gtk
+
+    GTK_WINDOW_TOPLEVEL = gtk.WindowType.TOPLEVEL
+    GTK_POS_LEFT = gtk.PositionType.LEFT
+    GTK_DIALOG_MODAL = gtk.DialogFlags.MODAL
+    GTK_MESSAGE_QUESTION = gtk.MessageType.QUESTION
+    GTK_BUTTONS_YES_NO = gtk.ButtonsType.YES_NO
+    GTK_RESPONSE_YES = gtk.ResponseType.YES
+    GTK_RESPONSE_CANCEL = gtk.ResponseType.CANCEL
+    GTK_RESPONSE_OK = gtk.ResponseType.OK
+    GTK_FILE_CHOOSER_ACTION_OPEN = gtk.FileChooserAction.OPEN
+    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER = gtk.FileChooserAction.SELECT_FOLDER
+    GTK_SHADOW_NONE = gtk.ShadowType.NONE
+
+class ConfigEntry:
+    def __init__(self, entry_name, data_format, default_value):
+        self.EntryName = entry_name
+        self.DataFormat = data_format
+        self.DefaultValue = default_value
+        self.FileValue = default_value
+        self.CurrentValue = default_value
+
+        self.DataType = "Unknown"
+        if "/" in self.DataFormat:
+            self.DataType = "ListOfValues"
+            self.ListOfValuesLow = self.DataFormat.lower().split("/")
+        elif "-" in self.DataFormat:
+            self.DataType = "IntegerRange"
+            partition = self.DataFormat.partition("-")
+            self.MinIntValue = int(partition[0])
+            self.MaxIntValue = int(partition[2])
+        elif self.DataFormat == "*":
+            self.DataType = "*"
+        else:
+            raise BaseException("ConfigEntry: unknown data format")
+
+
+    def ResetValue(self):
+        self.FileValue = self.DefaultValue
+        self.CurrentValue = self.DefaultValue
+
+    def GetFormat(self):
+        return self.DataFormat
+
+    def GetName(self):
+        return self.EntryName
+
+    def GetValue(self):
+        return self.CurrentValue
+
+    def IsValueChanged(self):
+        return self.CurrentValue != self.FileValue
+
+    def CorrectValue(self, value):
+        if self.DataType == "ListOfValues":
+            if value.lower() in self.ListOfValuesLow:
+                return value
+        elif self.DataType == "IntegerRange":
+            try:
+                ivalue = int(value)
+            except ValueError:
+                return self.DefaultValue
+
+            if ivalue < self.MinIntValue:
+                return str(self.MinIntValue)
+            elif ivalue > self.MaxIntValue:
+                return str(self.MaxIntValue)
+            else:
+                return value
+        else:
+            return value
+
+        return self.DefaultValue
+
+    def LoadFileValue(self, file_value):
+        self.FileValue = file_value
+
+        self.CurrentValue = self.CorrectValue(file_value)
+
+    def RestoreDefaultValue(self):
+        self.CurrentValue = self.DefaultValue
+
+    def RestoreFileValue(self):
+        self.CurrentValue = self.FileValue
+
+    def SaveFileValue(self):
+        self.FileValue = self.CurrentValue
+
+        return self.CurrentValue
+
+    def SetValue(self, new_value):
+        if new_value == self.CorrectValue(new_value):
+            self.CurrentValue = new_value
+        else:
+            raise BaseException("ConfigEntry: wrong value")
+
+
+class ConfigFile:
+    def __init__(self, game, platform):
+        self.Entries = dict()
+        self.Lines = []
+        self.EOL = ""
+
+        # misc entries
+        self.AddEntry("Sound", "on/off", "on")
+        self.AddEntry("Music", "on/off", "on")
+
+        if game == "albion" or game == "xcom1" or game == "xcom2":
+            self.AddEntry("Intro", "on/off", "on")
+
+        if game == "albion":
+            self.AddEntry("Screenshot_Format", "Original/LBM/LBM_pad16/TGA/BMP/PNG", "Original")
+            self.AddEntry("Screenshot_Enhanced_Resolution", "on/off", "off")
+            self.AddEntry("Screenshot_Enabled", "yes/no", "no")
+            self.AddEntry("Screenshot_Automatic_Filename", "yes/no", "no")
+
+
+        # display entries
+        if game == "albion":
+            self.AddEntry("Display_ScaledWidth", "640-3840", "720")
+            self.AddEntry("Display_ScaledHeight", "480-2160", "480")
+        else:
+            self.AddEntry("Display_ScaledWidth", "640-3840", "640")
+            self.AddEntry("Display_ScaledHeight", "400-2160", "400")
+
+        self.AddEntry("Display_Fullscreen", "yes/no", ("yes" if platform == "pyra" else "no"))
+        self.AddEntry("Display_MouseCursor", "normal/minimal/none", "normal")
+
+        if game == "albion":
+            self.AddEntry("Display_Enhanced_3D_Rendering", "on/off", "on")
+
+        self.AddEntry("Display_Scaling", "basic/basicnb/advanced/advancednb", ("advanced" if platform == "pyra" else "basic"))
+        self.AddEntry("Display_AdvancedScaler", "normal/hqx/xbrz", "normal")
+        self.AddEntry("Display_ScalerFactor", "max/2/3/4/5/6", "max")
+        self.AddEntry("Display_ExtraScalerThreads", "auto/0/1/2/3/4/5/6/7", "auto")
+
+        # audio entries
+        self.AddEntry("Audio_Channels", "stereo/mono", "stereo")
+        self.AddEntry("Audio_Resolution", "16/8", "16")
+        self.AddEntry("Audio_Sample_Rate", "11025-384000", ("44100" if platform == "pc" else "22050"))
+        self.AddEntry("Audio_Resampling_Quality", "0/1", ("1" if platform == "pc" else "0"))
+
+        midi_values = "alsa/wildmidi"
+        if os.uname()[4] != "riscv64":
+            midi_values += "/bassmidi"
+        midi_values += "/adlmidi/sdl_mixer"
+        if game == "xcom1" or game == "xcom2":
+            midi_values += "/adlib-dosbox_opl/mt32-munt/awe32-emu8k"
+        midi_values += "/mt32-alsa"
+        self.AddEntry("Audio_MIDI_Subsystem", midi_values, "adlmidi")
+
+        if "alsa" in midi_values or "mt32-alsa" in midi_values:
+            self.AddEntry("Audio_MIDI_Device", "*", "")
+
+        if "bassmidi" in midi_values:
+            self.AddEntry("Audio_SoundFont_Path", "*", "")
+
+        if "mt32-munt" in midi_values:
+            self.AddEntry("Audio_MT32_Roms_Path", "*", "")
+
+        if "awe32-emu8k" in midi_values:
+            self.AddEntry("Audio_AWE32_Rom_Path", "*", "")
+
+        if game == "xcom1" or game == "xcom2":
+            self.AddEntry("Audio_OPL3_BankNumber", "0-77", "77")
+
+        if "mt32-alsa" in midi_values:
+            self.AddEntry("Audio_MT32_Delay_Sysex", "yes/no", "no")
+
+        self.AddEntry("Audio_OPL3_Emulator", "fast/precise", "precise" if platform == "pc" else "fast")
+
+        if game == "albion":
+            self.AddEntry("Audio_Swap_Channels", "yes/no", "yes")
+
+        if game == "warcraft":
+            self.AddEntry("Audio_Music_Volume", "0-127", "80")
+
+        if game == "xcom1" or game == "xcom2":
+            self.AddEntry("Audio_Music_Volume", "0-128", "128")
+            self.AddEntry("Audio_Sample_Volume", "0-128", "128")
+
+            self.AddEntry("Audio_Buffer_Size", "256-65536", ("2048" if platform == "pc" else "1024"))
+        else:
+            self.AddEntry("Audio_Buffer_Size", "256-65536", ("4096" if platform == "pc" else "2048"))
+
+
+        # keys entries
+        if game == "albion":
+            self.AddEntry("Keys_WSAD", "WSAD/ArrowKeys", "WSAD")
+            self.AddEntry("Keys_ArrowKeys", "ArrowKeys/WSAD", "ArrowKeys")
+
+
+        # input entries
+        if platform == "pc":
+            self.AddEntry("Input_GameController", "no/yes", "no")
+            self.AddEntry("Controller_Deadzone", "0-8190", "1000")
+
+        if game == "warcraft":
+            self.AddEntry("Input_MouseHelper", "on/off", "off")
+            self.AddEntry("Input_SelectGroupTreshold", "0-20", "6")
+
+    def AddEntry(self, entry_name, data_format, default_value):
+        self.Entries[entry_name.lower()] = ConfigEntry(entry_name, data_format, default_value)
+
+    def AreValuesChanged(self):
+        for entry_lname in iter(self.Entries):
+            if self.Entries[entry_lname].IsValueChanged():
+                return True
+
+        return False
+
+    def ResetValues(self):
+        for entry_lname in iter(self.Entries):
+            self.Entries[entry_lname].ResetValue()
+
+    def HasEntry(self, entry_name):
+        return entry_name.lower() in self.Entries
+
+    def GetEntryFormat(self, entry_name):
+        return self.Entries[entry_name.lower()].GetFormat()
+
+    def GetEntryName(self, entry_name):
+        return self.Entries[entry_name.lower()].GetName()
+
+    def GetEntryValue(self, entry_name):
+        return self.Entries[entry_name.lower()].GetValue()
+
+    def SetEntryValue(self, entry_name, new_value):
+        self.Entries[entry_name.lower()].SetValue(new_value)
+
+    def RestoreEntryDefaultValue(self, entry_name):
+        self.Entries[entry_name.lower()].RestoreDefaultValue()
+
+    def RestoreEntryFileValue(self, entry_name):
+        self.Entries[entry_name.lower()].RestoreFileValue()
+
+    def ReadConfigFile(self, file_path):
+        self.ResetValues()
+        self.Lines = []
+        fCfg = open(file_path, "r" if sys.version_info >= (3, 4) else "rU")
+
+        for OrigLine in fCfg:
+            Line = OrigLine.strip(" \r\n")
+            IsEntry = False
+
+            EqIndex = Line.find("=")
+
+            if (not Line.startswith("#")) and (EqIndex != -1):
+                EntryName = Line[:EqIndex].strip(" ")
+                EntryValue = Line[EqIndex + 1:].strip(" ")
+
+                if self.HasEntry(EntryName):
+                    IsEntry = True
+
+            if IsEntry:
+                self.Entries[EntryName.lower()].LoadFileValue(EntryValue)
+
+                self.Lines.append((OrigLine.strip("\r\n"), EntryName.lower()))
+            else:
+                self.Lines.append((OrigLine.strip("\r\n"), ""))
+
+        if fCfg.newlines is None:
+            self.EOL = ""
+        elif type(fCfg.newlines) is tuple:
+            self.EOL = ""
+        else:
+            self.EOL = fCfg.newlines
+
+        fCfg.close()
+
+    def WriteConfigFile(self, file_path):
+        if (self.EOL == ""):
+            fCfg = open(file_path, "wt")
+            EOL = "\n"
+        else:
+            if sys.version_info >= (3, 0):
+                fCfg = open(file_path, "wt", newline="")
+            else:
+                fCfg = open(file_path, "wb")
+            EOL = self.EOL
+
+        UsedEntryNamesLow = set([])
+        for (OrigLine, EntryNameLow) in self.Lines:
+            if EntryNameLow == "":
+                fCfg.write(OrigLine + EOL)
+            else:
+                UsedEntryNamesLow.add(EntryNameLow)
+                fCfg.write(self.Entries[EntryNameLow].GetName() + "=" + self.Entries[EntryNameLow].SaveFileValue() + EOL)
+
+        FirstNewEntry = True
+        for EntryNameLow in iter(self.Entries):
+            if not EntryNameLow in UsedEntryNamesLow:
+                if FirstNewEntry:
+                    FirstNewEntry = False
+                    fCfg.write("# added automatically by configurator: " + datetime.datetime.now().isoformat(" ") + EOL)
+
+                fCfg.write(self.Entries[EntryNameLow].GetName() + "=" + self.Entries[EntryNameLow].SaveFileValue() + EOL)
+
+        fCfg.close()
+
+
+class ConfigGUI:
+    def delete(self, widget, event=None):
+        gtk.main_quit()
+        return False
+
+    def __init__(self, game, platform, file_path):
+        self.file_path = file_path
+        self.widgets = []
+
+        self.CfgFile = ConfigFile(game, platform)
+        self.CfgFile.ReadConfigFile(file_path)
+
+        self.window = gtk.Window(type=GTK_WINDOW_TOPLEVEL)
+        self.window.connect("delete_event", self.delete)
+
+        self.window.set_size_request(790, 420)
+        self.window.set_title(os.path.basename(file_path))
+
+        mainvbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.window.add(mainvbox)
+
+        # Create a new notebook, place the position of the tabs
+        notebook = gtk.Notebook()
+        notebook.set_tab_pos(GTK_POS_LEFT)
+        mainvbox.pack_start(notebook, True, True, 0)
+        notebook.show()
+        self.show_tabs = True
+        self.show_border = True
+
+        if self.CfgFile.HasEntry("Intro"):
+            vbox = self.AddPageFrameVBox(notebook, "Intro", "Intro")
+
+            self.CreateRadioSet(vbox, "Intro:", "Intro", "Select whether intro is played when the game is started.")
+
+        if self.CfgFile.HasEntry("Sound") or self.CfgFile.HasEntry("Music"):
+            vbox = self.AddPageFrameVBox(notebook, "Music/Sound", "Music / Sound")
+
+            if self.CfgFile.HasEntry("Music"):
+                self.CreateRadioSet(vbox, "Music:", "Music", "Select whether music is played during the game.")
+
+            if self.CfgFile.HasEntry("Music"):
+                if self.CfgFile.HasEntry("Sound"):
+                    self.CreateSeparator(vbox)
+
+                self.CreateRadioSet(vbox, "Sound:", "Sound", "Select whether sound effects are played during the game.")
+
+        if self.CfgFile.HasEntry("Audio_Channels"):
+            vbox = self.AddPageFrameVBox(notebook, "Audio", "Audio parameters")
+
+            self.CreateRadioSet2(vbox, "Channels:", "Audio_Channels", None, "Number of audio channels.")
+            self.CreateSeparator(vbox)
+            self.CreateRadioSet2(vbox, "Resolution:", "Audio_Resolution", None, "Audio resolution - 8 or 16 bits.")
+            self.CreateSeparator(vbox)
+            self.CreateRadioSet2(vbox, "Sample Rate:", "Audio_Sample_Rate", "11025/22050/44100/48000/96000/192000/384000", "Audio frequency in Hz.")
+            self.CreateSeparator(vbox)
+            self.CreateRadioSet2(vbox, "Buffer Size:", "Audio_Buffer_Size", "128/256/512/1024/2048/4096/8192/16384/32768", "Audio buffer size in bytes.")
+
+        if self.CfgFile.HasEntry("Audio_Resampling_Quality"):
+            vbox = self.AddPageFrameVBox(notebook, "Audio 2", "Audio parameters")
+
+            self.CreateRadioSet2(vbox, "Resampling quality", "Audio_Resampling_Quality", None, "Select audio resampling quality (higher = better).")
+
+            if self.CfgFile.HasEntry("Audio_Swap_Channels"):
+                self.CreateSeparator(vbox)
+
+                description = "Select whether to swap left and right sound channel or not."
+                if game == "albion":
+                    description += "\nAlbion has the channels swapped, so swapping them corrects it."
+                self.CreateRadioSet2(vbox, "Swap Channels ?", "Audio_Swap_Channels", None, description)
+
+            if self.CfgFile.HasEntry("Audio_Music_Volume"):
+                self.CreateSeparator(vbox)
+                self.CreateScale(vbox, "Music Volume:", "Audio_Music_Volume", "Music volume loudness relative to overall volume")
+
+            if self.CfgFile.HasEntry("Audio_Sample_Volume"):
+                self.CreateSeparator(vbox)
+                self.CreateScale(vbox, "Sample Volume:", "Audio_Sample_Volume", "Sound sample volume loudness relative to overall volume")
+
+        if self.CfgFile.HasEntry("Audio_MIDI_Subsystem"):
+            vbox = self.AddPageFrameVBox(notebook, "MIDI", "MIDI")
+
+            description = "Select library for music playback."
+
+            if "adlib-dosbox_opl" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                description += "\nGeneral MIDI music (ALSA sequencer or WildMIDI"
+                if "bassmidi" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                    description += ", BASSMIDI"
+                description += ", ADLMIDI, SDL_mixer library),\n  Adlib music or MT-32 music"
+                if self.CfgFile.HasEntry("Audio_MT32_Roms_Path"):
+                    description += " (MUNT emulator or ALSA sequencer)."
+                else:
+                    description += " (ALSA sequencer)."
+
+            if "alsa" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                description += "\nALSA sequencer can use hardware or software synth (like Fluidsynth or TiMidity++)."
+
+            description += "\nWildMIDI uses GUS patch files for playback."
+            if self.CfgFile.HasEntry("Audio_SoundFont_Path"):
+                description += "\nBASSMIDI uses soundfont for playback."
+
+            if "adlmidi" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                description += "\nADLMIDI uses OPL3 emulator for playback."
+
+            if "adlib-dosbox_opl" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                if self.CfgFile.HasEntry("Audio_OPL3_Emulator"):
+                    description += "\nAdlib music is played using 'compat' OPL emulator from DOSBox or Nuked OPL3 emulator.\n  (DOS game version)"
+                else:
+                    description += "\nAdlib music is played using 'compat' OPL emulator from DOSBox. (DOS game version)"
+
+            if self.CfgFile.HasEntry("Audio_MT32_Roms_Path"):
+                description += "\nMT-32 music is played using MUNT emulator or ALSA sequencer. (DOS game version)"
+
+            if "awe32-emu8k" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                description += "\nGeneral MIDI music can be played using AWE32 emulator. (DOS game version)"
+
+            if "mt32-alsa" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                if "adlib-dosbox_opl" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                    description += "\nMusic can be played on MT-32 synth using ALSA sequencer.\n  (MT-32 music in DOS game version / General MIDI music in Gold edition)"
+                else:
+                    description += "\nMusic can be played on MT-32 synth using ALSA sequencer."
+
+            self.CreateRadioSet2(vbox, "MIDI Subsystem:", "Audio_MIDI_Subsystem", (2 if self.CfgFile.HasEntry("Audio_MT32_Roms_Path") else 1), description)
+
+            if self.CfgFile.HasEntry("Audio_MT32_Delay_Sysex"):
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "MT32 Delay Sysex:", "Audio_MT32_Delay_Sysex", None, "Add delays when sending sysex messages on MT-32 ? (to prevent buffer overflow with Rev.0 MT-32)")
+
+            num_extra_options = 0
+
+            if self.CfgFile.HasEntry("Audio_MIDI_Device"):
+                num_extra_options += 1
+
+            if self.CfgFile.HasEntry("Audio_SoundFont_Path"):
+                num_extra_options += 1
+
+            if self.CfgFile.HasEntry("Audio_AWE32_Rom_Path"):
+                num_extra_options += 1
+
+            if self.CfgFile.HasEntry("Audio_MT32_Roms_Path"):
+                num_extra_options += 1
+
+            if self.CfgFile.HasEntry("Audio_OPL3_BankNumber"):
+                num_extra_options += 1
+
+            if self.CfgFile.HasEntry("Audio_OPL3_Emulator"):
+                num_extra_options += 1
+
+            if num_extra_options >= 1:
+                vbox = self.AddPageFrameVBox(notebook, "MIDI 2", "MIDI")
+
+            if self.CfgFile.HasEntry("Audio_MIDI_Device"):
+                self.CreateAlsaClientSelector(vbox, "MIDI Device:", "Audio_MIDI_Device", "Client name or port (e.g. 128:0). No value = autodetection.\nThis is used when MIDI playback using ALSA sequencer is selected.")
+                num_extra_options -= 1
+                if num_extra_options != 0:
+                    self.CreateSeparator(vbox)
+
+            if self.CfgFile.HasEntry("Audio_SoundFont_Path"):
+                self.CreateSoundfontSelector(vbox, "SoundFont Path:", "Audio_SoundFont_Path", "Set path to soundfont file. No value = autodetection in game's directory.\nThis is used when MIDI playback using BASSMIDI is selected.")
+                num_extra_options -= 1
+                if num_extra_options >= 1:
+                    self.CreateSeparator(vbox)
+
+            if self.CfgFile.HasEntry("Audio_AWE32_Rom_Path"):
+                self.CreateROMFileSelector(vbox, "AWE32 Rom Path:", "Audio_AWE32_Rom_Path", "Set path to AWE32 rom file. (Default filename is awe32.raw)\nThis is necessary when MIDI playback using AWE32 emulator is selected.")
+                num_extra_options -= 1
+
+            if num_extra_options >= 2:
+                vbox = self.AddPageFrameVBox(notebook, "MIDI 3", "MIDI")
+
+            if self.CfgFile.HasEntry("Audio_MT32_Roms_Path"):
+                self.CreateROMsDirectorySelector(vbox, "MT-32 Roms Path:", "Audio_MT32_Roms_Path", "Set path to directory containing Control and PCM roms from MT-32 or CM-32L (LAPC-I).\nThis is necessary when MIDI playback using MUNT emulator is selected.\nCM-32L (LAPC-I) roms are preferred.\nThe CM-32L (LAPC-I) roms filenames must be CM32L_CONTROL.ROM and CM32L_PCM.ROM.\nThe MT-32 roms filenames must be MT32_CONTROL.ROM and MT32_PCM.ROM.")
+                num_extra_options -= 1
+                if num_extra_options != 0:
+                    self.CreateSeparator(vbox)
+
+            if self.CfgFile.HasEntry("Audio_OPL3_BankNumber"):
+                self.CreateScale(vbox, "OPL3 Bank Number:", "Audio_OPL3_BankNumber", "Select bank to play MIDI using OPL3 emulator.\nThis is used when MIDI playback using ADLMIDI is selected.")
+                num_extra_options -= 1
+                if num_extra_options != 0:
+                    self.CreateSeparator(vbox)
+
+            if self.CfgFile.HasEntry("Audio_OPL3_Emulator"):
+                description = ""
+                if "adlmidi" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                    description += "MIDI playback using ADLMIDI"
+
+                if "adlib-dosbox_opl" in self.CfgFile.GetEntryFormat("Audio_MIDI_Subsystem"):
+                    if description != "":
+                        description += " or "
+                    description += "Adlib music"
+
+                description = "Use fast (DOSBox) or precise (Nuked) OPL3 emulator.\nThis is used when " + description + " is selected."
+                self.CreateRadioSet2(vbox, "OPL3 Emulator:", "Audio_OPL3_Emulator", None, description)
+                num_extra_options -= 1
+                if num_extra_options != 0:
+                    self.CreateSeparator(vbox)
+
+        if self.CfgFile.HasEntry("Display_Fullscreen") or self.CfgFile.HasEntry("Display_MouseCursor") or self.CfgFile.HasEntry("Display_Enhanced_3D_Rendering"):
+            vbox = self.AddPageFrameVBox(notebook, "Display", "Display")
+
+            IsFirst = True
+            if self.CfgFile.HasEntry("Display_Fullscreen"):
+                IsFirst = False
+                self.CreateRadioSet2(vbox, "Display Scaled Width:", "Display_ScaledWidth", ("640/720" if game == "albion" else "640") + "/960/1280/1600/1920/2240/2560/2880/3840", "Default value is " + ("720" if game == "albion" else "640") + ". Correct display aspect ratio is 4:3.")
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "Display Scaled Height:", "Display_ScaledHeight", ("480" if game == "albion" else "400/480") + "/720/960/1080/1200/1440/1680/1920/2160", "Default value is " + ("480" if game == "albion" else "400") + ". Correct display aspect ratio is 4:3.")
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "Display Fullscreen:", "Display_Fullscreen", None, "Select whether game is displayed fullscreen or in a window.")
+
+                if self.CfgFile.HasEntry("Display_MouseCursor"):
+                    self.CreateSeparator(vbox)
+                    self.CreateRadioSet2(vbox, "Display MouseCursor:", "Display_MouseCursor", None, "Select mouse cursor type when the game is displayed in a window.")
+                    if self.CfgFile.HasEntry("Display_Enhanced_3D_Rendering") or self.CfgFile.HasEntry("Display_Scaling"):
+                        vbox = self.AddPageFrameVBox(notebook, "Display 2", "Display")
+
+                        IsFirst = True
+
+            if self.CfgFile.HasEntry("Display_Enhanced_3D_Rendering"):
+                if not IsFirst:
+                    self.CreateSeparator(vbox)
+                IsFirst = False
+                self.CreateRadioSet(vbox, "Enhanced 3D Rendering:", "Display_Enhanced_3D_Rendering", "Enhanced 3D rendering renders the 3d part of the game in the native resolution,\ninstead of rendering it in the original resolution and then scaling it.\n\nThere are some minor issues, read the readme for more information.")
+                if self.CfgFile.HasEntry("Display_Scaling"):
+                    vbox = self.AddPageFrameVBox(notebook, "Display 3", "Display")
+
+                    IsFirst = True
+
+            if self.CfgFile.HasEntry("Display_Scaling"):
+                if not IsFirst:
+                    self.CreateSeparator(vbox)
+                IsFirst = False
+                self.CreateRadioSet2(vbox, "Display Scaling:", "Display_Scaling", None, "Use basic or advanced scaling.\nBy default, bilinear filtering is used.\nVersions ending with -nb mean without bilinear filtering (= nearest neighbour filtering).")
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "Display Advanced Scaler:", "Display_AdvancedScaler", None, "Advanced scaling algorithm.\nNormal means nearest neighbour.\nHqx supports scaling factors 2-4. Xbrz supports scaling factors 2-6.")
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "Display Scaler Factor:", "Display_ScalerFactor", None, "Scaling factor for advanced scaling.\nMax means maximum scaling factor based on selected resolution.")
+                self.CreateSeparator(vbox)
+                self.CreateRadioSet2(vbox, "Display Extra Scaler Threads:", "Display_ExtraScalerThreads", None, "Number of extra threads used for advanced scaling.\nAuto means number of threads based on number of cpu cores.")
+
+        if self.CfgFile.HasEntry("Screenshot_Format"):
+            vbox = self.AddPageFrameVBox(notebook, "Screenshots", "Screenshot settings")
+
+            self.CreateRadioSet2(vbox, "Screenshot Format:", "Screenshot_Format", None, "Original = original image format (LBM)\nLBM/TGA/BMP = image format is LBM/TGA/BMP\nLBM_pad16 = image format is LBM with lines in file padded to 16 bytes\nPNG = image format is PNG (requires zlib library)")
+            self.CreateRadioSet2(vbox, "Screenshot Enhanced Resolution:", "Screenshot_Enhanced_Resolution", None, "Create screenshots in enhanced (when it's possible) or original (360x240) resolution.")
+            self.CreateRadioSet2(vbox, "Screenshot Enabled ?", "Screenshot_Enabled", None, "Select whether making screenshots (using F4 key) is enabled without entering developer mode.")
+            self.CreateRadioSet2(vbox, "Screenshot Automatic Filename ?", "Screenshot_Automatic_Filename", None, "Select whether screenshot filename is generated automatically (Screenshot????.???) or not.")
+
+        if self.CfgFile.HasEntry("Keys_WSAD"):
+            vbox = self.AddPageFrameVBox(notebook, "Keys", "Keys")
+
+            self.CreateRadioSet(vbox, "Use WSAD keys as WSAD keys or as arrow keys ?", "Keys_WSAD")
+            self.CreateRadioSet(vbox, "Use arrow keys as arrow keys or as WSAD keys ?", "Keys_ArrowKeys")
+
+        if self.CfgFile.HasEntry("Input_GameController") or self.CfgFile.HasEntry("Input_MouseHelper"):
+            vbox = self.AddPageFrameVBox(notebook, "Input", "Input")
+
+            dpad_input_mode = True
+            if self.CfgFile.HasEntry("Input_GameController"):
+                self.CreateRadioSet(vbox, "Game Controller:", "Input_GameController", "Select whether to use game controller or joystick as mouse / keyboard.")
+
+            if self.CfgFile.HasEntry("Controller_Deadzone"):
+                self.CreateSeparator(vbox)
+
+                self.CreateScale(vbox, "Controller Deadzone:", "Controller_Deadzone", "Select controller deadzone.")
+
+            mouse_helper = False
+            if dpad_input_mode and self.CfgFile.HasEntry("Input_MouseHelper"):
+                mouse_helper = True
+                if self.CfgFile.HasEntry("Input_GameController"):
+                    vbox = self.AddPageFrameVBox(notebook, "Input2", "Input2")
+
+                description = "Select whether mouse helper is enabled."
+                description += "\nFeatures:"
+                description += "\n* Left click and drag to draw selection boxes around multiple units\n  without having to hold down the CTRL key."
+                description += "\n* Right click to order units to move, attack or harvest/transport goods."
+                description += "\n  (Can also be used to build walls when the town center is selected)"
+                description += "\n* Middle click to order units to repair or stop."
+                description += "\n  (Can also be used to build roads when the town center is selected)"
+                self.CreateRadioSet(vbox, "Mouse Helper:", "Input_MouseHelper", description)
+
+            if self.CfgFile.HasEntry("Input_SelectGroupTreshold"):
+                self.CreateSeparator(vbox)
+
+                self.CreateScale(vbox, "Select Group Treshold:", "Input_SelectGroupTreshold", "Select treshold (distance in pixels) in " + ("mouse" if mouse_helper else "touchscreen") + " input before\nleft mouse click changes to ctrl + left mouse click (select group).", dpad_input_mode and not mouse_helper)
+
+        # Create a bunch of buttons
+        hbox = gtk.HBox(homogeneous=True, spacing=0)
+        mainvbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+
+        button = gtk.Button(label="Save")
+        button.connect("clicked", self.Save)
+        hbox.pack_start(button, False, True, 0)
+        button.show()
+
+        button = gtk.Button(label="Restore values")
+        button.connect("clicked", self.RestoreValues)
+        hbox.pack_start(button, False, True, 0)
+        button.show()
+
+        button = gtk.Button(label="Load default values")
+        button.connect("clicked", self.LoadDefaultValues)
+        hbox.pack_start(button, False, True, 0)
+        button.show()
+
+        button = gtk.Button(label="Exit")
+        button.connect("clicked", self.Exit)
+        hbox.pack_start(button, False, True, 0)
+        button.show()
+
+        mainvbox.show()
+        self.window.show()
+
+    def Save(self, widget, data=None):
+        message = gtk.MessageDialog(parent=self.window, buttons=GTK_BUTTONS_YES_NO)
+        message.set_modal(True)
+        message.props.message_type = GTK_MESSAGE_QUESTION
+        message.props.text = "Save configuration ?"
+        message.format_secondary_text("Existing configuration will be overwritten.")
+        message.set_title("Question")
+
+        response = message.run()
+        message.destroy()
+
+        if response != GTK_RESPONSE_YES:
+            return
+
+        self.CfgFile.WriteConfigFile(self.file_path)
+
+    def RestoreValues(self, widget, data=None):
+        message = gtk.MessageDialog(parent=self.window, buttons=GTK_BUTTONS_YES_NO)
+        message.set_modal(True)
+        message.props.message_type = GTK_MESSAGE_QUESTION
+        message.props.text = "Restore values ?"
+        message.format_secondary_text("Configuration entries will be restored to the last saved values.")
+        message.set_title("Question")
+
+        response = message.run()
+        message.destroy()
+
+        if response != GTK_RESPONSE_YES:
+            return
+
+        for entry_type, entry_name, widget in self.widgets:
+            self.CfgFile.RestoreEntryFileValue(entry_name)
+
+        self.DisplayValues()
+
+    def LoadDefaultValues(self, widget, data=None):
+        message = gtk.MessageDialog(parent=self.window, buttons=GTK_BUTTONS_YES_NO)
+        message.set_modal(True)
+        message.props.message_type = GTK_MESSAGE_QUESTION
+        message.props.text = "Load default values ?"
+        message.format_secondary_text("Configuration entries will be set to their default values.")
+        message.set_title("Question")
+
+        response = message.run()
+        message.destroy()
+
+        if response != GTK_RESPONSE_YES:
+            return
+
+        for entry_type, entry_name, widget in self.widgets:
+            self.CfgFile.RestoreEntryDefaultValue(entry_name)
+
+        self.DisplayValues()
+
+    def Exit(self, widget, data=None):
+        if self.CfgFile.AreValuesChanged():
+            message = gtk.MessageDialog(parent=self.window, buttons=GTK_BUTTONS_YES_NO)
+            message.set_modal(True)
+            message.props.message_type = GTK_MESSAGE_QUESTION
+            message.props.text = "Exit without saving ?"
+            message.format_secondary_text("Some configuration entries were changed.\nIf you exit now, the changed values won't be saved.")
+            message.set_title("Question")
+
+            response = message.run()
+            message.destroy()
+
+            if response != GTK_RESPONSE_YES:
+                return
+
+        self.delete(self.window)
+
+    def AddPageFrameVBox(self, notebook, page_label, frame_label):
+        frame = gtk.Frame(label=frame_label)
+        frame.set_border_width(5)
+        frame.set_shadow_type(GTK_SHADOW_NONE)
+        frame.show()
+
+        label = gtk.Label()
+        label.set_label(page_label)
+        notebook.append_page(frame, label)
+
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        frame.add(vbox)
+        vbox.show()
+
+        return vbox
+
+    def CreateEntryLabel(self, parentvbox, entry_label, padding):
+        label = gtk.Label()
+        label.set_label(entry_label)
+        label.props.xalign = 0
+        label.props.yalign = 0
+        label.props.xpad = padding
+        label.props.ypad = 0
+        parentvbox.pack_start(label, False, False, 0)
+        label.show()
+
+    def CreateSeparator(self, parentvbox):
+        separator = gtk.HSeparator()
+        parentvbox.pack_start(separator, False, False, 0)
+        separator.show()
+
+    def CreateEntry(self, parentvbox, entry_label, entry_name, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        entry = gtk.Entry()
+        entry.set_max_length(256)
+        entry.set_text(self.CfgFile.GetEntryValue(entry_name))
+        entry.connect("changed", self.EntryChanged, entry_name)
+        vbox.pack_start(entry, False, False, 5)
+        entry.show()
+
+        self.widgets.append(("entry", entry_name, entry))
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateAlsaClientSelector(self, parentvbox, entry_label, entry_name, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 5)
+        hbox.show()
+
+        if hasattr(gtk, "ComboBoxText"):
+            combo = gtk.ComboBoxText(has_entry = True)
+        else:
+            combo = gtk.combo_box_entry_new_text()
+        entry = combo.get_child()
+        entry.set_max_length(256)
+        entry.set_text(self.CfgFile.GetEntryValue(entry_name))
+        entry.connect("changed", self.EntryChanged, entry_name)
+        hbox.pack_start(combo, True, True, 5)
+        combo.show()
+
+        self.widgets.append(("entry", entry_name, entry))
+
+        button = gtk.Button(label="Refresh")
+        button.connect("clicked", self.RefreshAlsaClients, combo)
+        hbox.pack_start(button, False, False, 5)
+        button.show()
+
+        self.RefreshAlsaClients(button, combo)
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateSoundfontSelector(self, parentvbox, entry_label, entry_name, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 5)
+        hbox.show()
+
+        entry = gtk.Entry()
+        entry.set_max_length(256)
+        entry.set_text(self.CfgFile.GetEntryValue(entry_name))
+        entry.connect("changed", self.EntryChanged, entry_name)
+        hbox.pack_start(entry, True, True, 5)
+        entry.show()
+
+        self.widgets.append(("entry", entry_name, entry))
+
+        button = gtk.Button(label="Select SoundFont")
+        button.connect("clicked", self.SelectSoundfont, entry)
+        hbox.pack_start(button, False, False, 5)
+        button.show()
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateROMFileSelector(self, parentvbox, entry_label, entry_name, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 5)
+        hbox.show()
+
+        entry = gtk.Entry()
+        entry.set_max_length(256)
+        entry.set_text(self.CfgFile.GetEntryValue(entry_name))
+        entry.connect("changed", self.EntryChanged, entry_name)
+        hbox.pack_start(entry, True, True, 5)
+        entry.show()
+
+        self.widgets.append(("entry", entry_name, entry))
+
+        button = gtk.Button(label="Select ROM file")
+        button.connect("clicked", self.SelectROMFile, entry)
+        hbox.pack_start(button, False, False, 5)
+        button.show()
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateROMsDirectorySelector(self, parentvbox, entry_label, entry_name, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 5)
+        hbox.show()
+
+        entry = gtk.Entry()
+        entry.set_max_length(256)
+        entry.set_text(self.CfgFile.GetEntryValue(entry_name))
+        entry.connect("changed", self.EntryChanged, entry_name)
+        hbox.pack_start(entry, True, True, 5)
+        entry.show()
+
+        self.widgets.append(("entry", entry_name, entry))
+
+        button = gtk.Button(label="Select ROMs directory")
+        button.connect("clicked", self.SelectROMsDirectory, entry)
+        hbox.pack_start(button, False, False, 5)
+        button.show()
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateRadioSet(self, parentvbox, entry_label, entry_name, entry_description = None, ReadOnly = False):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        entry_format = self.CfgFile.GetEntryFormat(entry_name).split("/")
+        current_value = self.CfgFile.GetEntryValue(entry_name).lower()
+        group = None
+
+        buttons = []
+
+        for entry_value in entry_format:
+            button = gtk.RadioButton(group=group, label=entry_value)
+            button.set_use_underline(False)
+            if current_value == entry_value.lower():
+                button.set_active(True)
+            if ReadOnly:
+                button.set_sensitive(False)
+            button.connect("toggled", self.RadioSetToggle, entry_name + ":" + entry_value)
+            vbox.pack_start(button, False, False, 0)
+            button.show()
+            buttons.append(button)
+
+            if group is None:
+                group = button
+
+        if not ReadOnly:
+            self.widgets.append(("radioset", entry_name, buttons))
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateRadioSet2(self, parentvbox, entry_label, entry_name, entry_values, entry_description = None):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        num_lines = 1
+        current_value = self.CfgFile.GetEntryValue(entry_name).lower()
+        if entry_values is None:
+            entry_format = self.CfgFile.GetEntryFormat(entry_name).split("/")
+        elif isinstance(entry_values, int):
+            entry_format = self.CfgFile.GetEntryFormat(entry_name).split("/")
+            num_lines = entry_values
+        else:
+            entry_format = entry_values.split("/")
+            if not current_value in entry_format:
+                entry_format.append(current_value)
+        group = None
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+
+        buttons = []
+
+        num_values = len(entry_format)
+        value_num = 0
+        for entry_value in entry_format:
+            button = gtk.RadioButton(group=group, label=entry_value)
+            button.set_use_underline(False)
+            if current_value == entry_value.lower():
+                button.set_active(True)
+            button.connect("toggled", self.RadioSetToggle, entry_name + ":" + entry_value)
+            hbox.pack_start(button, False, False, 0)
+            button.show()
+            buttons.append(button)
+
+            if group is None:
+                group = button
+
+            value_num = value_num + 1
+            if num_lines > 1 and value_num * num_lines >= num_values:
+                hbox = gtk.HBox(homogeneous=False, spacing=0)
+                vbox.pack_start(hbox, False, False, 0)
+                hbox.show()
+
+                num_lines = num_lines - 1
+                num_values = num_values - value_num
+                value_num = 0
+
+        self.widgets.append(("radioset", entry_name, buttons))
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def CreateScale(self, parentvbox, entry_label, entry_name, entry_description = None, ReadOnly = False):
+        vbox = gtk.VBox(homogeneous=False, spacing=0)
+        self.CreateEntryLabel(vbox, entry_label, 5)
+
+        hbox = gtk.HBox(homogeneous=False, spacing=0)
+        vbox.pack_start(hbox, False, False, 0)
+        hbox.show()
+
+        entry_format = self.CfgFile.GetEntryFormat(entry_name).partition("-")
+        current_value = int(self.CfgFile.GetEntryValue(entry_name))
+        adjustment = gtk.Adjustment(value=current_value, lower=int(entry_format[0]), upper=int(entry_format[2]))
+        adjustment.set_step_increment(1)
+        adjustment.set_page_increment(1)
+        hscale = gtk.HScale(adjustment=adjustment)
+        hscale.set_digits(0)
+        if hasattr(hscale.props, "margin_top"):
+            hscale.props.margin_top = 4
+            hscale.props.margin_bottom = 4
+        if ReadOnly:
+            hscale.set_sensitive(False)
+        hscale.connect("value-changed", self.ScaleChanged, entry_name)
+        hbox.pack_start(hscale, True, True, 5)
+        hscale.show()
+
+        if not ReadOnly:
+            self.widgets.append(("scale", entry_name, hscale))
+
+        if not entry_description is None:
+            self.CreateEntryLabel(vbox, entry_description, 20)
+
+        parentvbox.pack_start(vbox, False, False, 5)
+        vbox.show()
+
+    def DisplayValues(self):
+        for entry_type, entry_name, widget in self.widgets:
+            current_value = self.CfgFile.GetEntryValue(entry_name)
+            if entry_type == "entry":
+                widget.set_text(current_value)
+            elif entry_type == "scale":
+                widget.set_value(int(current_value))
+            elif entry_type == "radioset":
+                for button in widget:
+                    button.set_active(button.get_label() == current_value)
+
+    def EntryChanged(self, widget, data=None):
+        self.CfgFile.SetEntryValue(data, widget.get_text())
+
+    def RadioSetToggle(self, widget, data=None):
+        if widget.get_active():
+            partition = data.partition(":")
+            self.CfgFile.SetEntryValue(partition[0], partition[2])
+
+    def ScaleChanged(self, widget, data=None):
+        self.CfgFile.SetEntryValue(data, str(int(widget.get_value())))
+
+    def AppendAlsaClient(self, combo, client, all_ports):
+        output_ports = []
+        for port in all_ports:
+            if 'W' in port[2]:
+                output_ports.append(port)
+
+        if len(output_ports) == 0:
+            return
+
+        combo.append_text(client[1])
+        for port in output_ports:
+            combo.append_text(client[0] + ":" + port[0])
+
+    def RefreshAlsaClients(self, widget, combo=None):
+        if hasattr(combo, "remove_all"):
+            combo.remove_all()
+        else:
+            model = combo.get_model()
+            while True:
+                combo.remove_text(0)
+                iter0 = model.get_iter_first()
+                if iter0 is None:
+                    break
+
+        combo.append_text("")
+
+        try:
+            fClients = open("/proc/asound/seq/clients", "rt")
+        except:
+            return
+
+        pattern_client = re.compile(r'Client[\s]+([0-9]+)[\s]+:[\s]+"(.+)"[\s]+\[.+]')
+        pattern_port = re.compile(r'[\s]*Port[\s]+([0-9]+)[\s]+:[\s]+"(.+)"[\s]+\((.+)\)')
+
+        current_client = None
+
+        for client_line in fClients:
+            if current_client:
+                match_port = pattern_port.match(client_line)
+                if match_port:
+                    current_ports.append(match_port.group(1, 2, 3))
+                    continue
+
+            match_client = pattern_client.match(client_line)
+            if match_client:
+                if current_client:
+                    self.AppendAlsaClient(combo, current_client, current_ports)
+                current_client = match_client.group(1, 2)
+                current_ports = []
+                continue
+
+        if current_client:
+            self.AppendAlsaClient(combo, current_client, current_ports)
+
+        fClients.close()
+
+    def SelectSoundfont(self, widget, entry=None):
+        dialog = gtk.FileChooserDialog(title="Select SoundFont", parent=self.window, action=GTK_FILE_CHOOSER_ACTION_OPEN)
+        dialog.add_buttons(gtk.STOCK_CANCEL,GTK_RESPONSE_CANCEL, gtk.STOCK_OK,GTK_RESPONSE_OK);
+
+        dialog.set_local_only(True)
+
+        filename = entry.get_text()
+        if filename is None or filename == "":
+            dialog.set_current_folder(os.getcwd())
+        else:
+            dialog.set_filename(filename)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("Soundfonts (*.sf2)")
+        dialog_filter.add_pattern("*.sf2")
+        dialog.add_filter(dialog_filter)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("All files (*)")
+        dialog_filter.add_pattern("*")
+        dialog.add_filter(dialog_filter)
+
+        response = dialog.run()
+
+        if response == GTK_RESPONSE_OK:
+            entry.set_text(dialog.get_filename())
+
+        dialog.destroy()
+
+    def SelectROMFile(self, widget, entry=None):
+        dialog = gtk.FileChooserDialog(title="Select ROM file", parent=self.window, action=GTK_FILE_CHOOSER_ACTION_OPEN)
+        dialog.add_buttons(gtk.STOCK_CANCEL,GTK_RESPONSE_CANCEL, gtk.STOCK_OK,GTK_RESPONSE_OK);
+
+        dialog.set_local_only(True)
+
+        filename = entry.get_text()
+        if filename is None or filename == "":
+            dialog.set_current_folder(os.getcwd())
+        else:
+            dialog.set_filename(filename)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("ROM file (awe32.raw)")
+        dialog_filter.add_pattern("awe32.raw")
+        dialog.add_filter(dialog_filter)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("All files (*)")
+        dialog_filter.add_pattern("*")
+        dialog.add_filter(dialog_filter)
+
+        response = dialog.run()
+
+        if response == GTK_RESPONSE_OK:
+            entry.set_text(dialog.get_filename())
+
+        dialog.destroy()
+
+    def SelectROMsDirectory(self, widget, entry=None):
+        dialog = gtk.FileChooserDialog(title="Select ROMs directory", parent=self.window, action=GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER)
+        dialog.add_buttons(gtk.STOCK_CANCEL,GTK_RESPONSE_CANCEL, gtk.STOCK_OK,GTK_RESPONSE_OK)
+
+        dialog.set_local_only(True)
+
+        dirname = entry.get_text()
+        if dirname is None or dirname == "":
+            dialog.set_current_folder(os.getcwd())
+        else:
+            dialog.set_current_folder(dirname)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("ROMs (*.rom)")
+        dialog_filter.add_pattern("*.ROM")
+        dialog_filter.add_pattern("*.rom")
+        dialog.add_filter(dialog_filter)
+
+        dialog_filter = gtk.FileFilter()
+        dialog_filter.set_name("All files (*)")
+        dialog_filter.add_pattern("*")
+        dialog.add_filter(dialog_filter)
+
+        response = dialog.run()
+
+        if response == GTK_RESPONSE_OK:
+            entry.set_text(dialog.get_filename())
+
+        dialog.destroy()
+
+if len(sys.argv) >= 4:
+    ConfigGUI(sys.argv[1], sys.argv[2], sys.argv[3])
+    gtk.main()
+else:
+    print("Not enough parameters: game platform file_path")
+    print("\tgame = albion / xcom1 / xcom2 / warcraft")
+    print("\tplatform = pc / pyra")
+

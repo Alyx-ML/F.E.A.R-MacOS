@@ -1,0 +1,345 @@
+#
+#  Copyright (C) 2016-2026 Roman Pauer
+#
+#  Permission is hereby granted, free of charge, to any person obtaining a copy of
+#  this software and associated documentation files (the "Software"), to deal in
+#  the Software without restriction, including without limitation the rights to
+#  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+#  of the Software, and to permit persons to whom the Software is furnished to do
+#  so, subject to the following conditions:
+#
+#  The above copyright notice and this permission notice shall be included in all
+#  copies or substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+#  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+#  SOFTWARE.
+#
+
+import os
+import subprocess
+
+# set help text
+vars = Variables('custom.py')
+vars.Add(EnumVariable('debug', 'Debug level (0 = release version)', '0',
+                                 allowed_values=('0', '1', '2'),
+                                 ignorecase=2))
+vars.Add(BoolVariable('mingw', 'Use MinGW instead of default compiler', False))
+vars.Add(EnumVariable('device', 'Set target device', '',
+                                 allowed_values=('', 'pc-windows', 'pc-linux', 'arm-linux', 'pyra', 'pc64-linux', 'arm64-linux', 'riscv64-linux', 'pc64-windows', 'pc64-darwin', 'arm64-darwin'),
+                                 ignorecase=2))
+vars.Add(BoolVariable('llasm', 'Compile llasm version instead of native version (when both are possible)', False))
+vars.Add(BoolVariable('ptrofs', 'Compile llasm version with offset pointers instead of llasm version with direct pointers (when both are possible)', False))
+vars.Add(EnumVariable('speexdsp', 'Use SpeexDSP library for higher quality resampling', '0',
+                                 allowed_values=('0', '1'),
+                                 ignorecase=2))
+env = Environment(variables = vars)
+
+debug = int(env['debug'])
+mingw = env['mingw']
+device = env['device']
+prefer_llasm = env['llasm']
+prefer_ptrofs64 = env['ptrofs']
+speexdsp = int(env['speexdsp'])
+clean = env.GetOption('clean')
+
+
+if device == '':
+    device = 'pc-linux'
+    if env['PLATFORM'] == 'win32':
+        device = 'pc-windows'
+    elif env['PLATFORM'] == 'darwin':
+        device = 'arm64-darwin'
+        machine = os.uname()[4]
+        if machine == 'x86_64':
+            device = 'pc64-darwin'
+    elif env['PLATFORM'] == 'posix':
+        machine = os.uname()[4]
+        if machine.startswith('arm'):
+            device = 'arm-linux'
+        elif machine == 'aarch64':
+            device = 'arm64-linux'
+        elif machine == 'riscv64':
+            device = 'riscv64-linux'
+        elif machine == 'x86_64' or machine == 'amd64':
+            device = 'pc64-linux'
+    env['device'] = device
+    print("\nYou didn't set any target device (parameter 'device').")
+    print("'" + device + "' will be used for compiling.\n")
+
+Help(vars.GenerateHelpText(env))
+
+Help("""
+Environment variables:
+  - PATH_INC: paths to find include files
+  - PATH_LIB: paths to find library files
+""")
+
+llasm_version = False
+
+if mingw:
+    env = Environment(tools = ['mingw'])
+elif env['CC'] == 'cl' and device == 'pc-windows':
+    env = Environment(TARGET_ARCH = 'x86')
+
+use_pic = False
+
+# default settings
+if env['CC'] == 'cl':
+    env.Append(CCFLAGS   = '/O2 /W3 /D_CRT_SECURE_NO_WARNINGS',
+               LINKFLAGS = '/INCREMENTAL:NO'
+              )
+
+    if debug <= 0:
+        env.Append(LINKFLAGS = '/DEBUG:NONE')
+    elif debug == 1:
+        env.Append(CCFLAGS   = '/Zi',
+                   LINKFLAGS = '/DEBUG:FULL'
+                  )
+    elif debug > 1:
+        env.Append(CCFLAGS   = '/Zi /D__DEBUG__',
+                   LINKFLAGS = '/DEBUG:FULL'
+                  )
+
+    if speexdsp > 0:
+        env.Append(CCFLAGS = '/DUSE_SPEEXDSP_RESAMPLER')
+else:
+    env.Append(CCFLAGS = '-O2 -Wall')
+
+    if debug <= 0:
+        env.Append(LINKFLAGS = '-s')
+    elif debug == 1:
+        env.Append(CCFLAGS = '-g')
+    else:
+        env.Append(CCFLAGS = '-g -D__DEBUG__')
+
+    if speexdsp > 0:
+        env.Append(CCFLAGS = '-DUSE_SPEEXDSP_RESAMPLER')
+
+if speexdsp > 0:
+    env.Append(LIBS = ['speexdsp'])
+
+if 'PATH_INC' in os.environ:
+    env.Append(CPPPATH = os.environ['PATH_INC'].split(os.pathsep))
+if 'PATH_LIB' in os.environ:
+    env.Append(LIBPATH = os.environ['PATH_LIB'].split(os.pathsep))
+
+
+if device.endswith('-linux'):
+    env.Append(LINKFLAGS  = '-Wl,-z,noexecstack',
+               CPPPATH    = ['/usr/include/SDL2', '/usr/local/include/SDL2', '/usr/local/include'],
+               LIBPATH    = ['/usr/local/lib'],
+               LIBS       = ['SDL2_mixer', 'SDL2', 'pthread', 'm', 'dl']
+              )
+
+    if device.startswith('pc-'):
+        if prefer_llasm:
+            llasm_version = True
+        env.Append(CCFLAGS    = '-m32',
+                   LINKFLAGS  = '-m32',
+                   LLASMFLAGS = '-inline-idiv',
+                   LLVMFLAGS  = '-mtriple=i686-unknown-linux-gnu'
+                  )
+    elif device.startswith('pc64-'):
+        if prefer_llasm:
+            llasm_version = True
+        if prefer_llasm and prefer_ptrofs64:
+            use_pic = True
+            env.Append(CCFLAGS    = '-m64 -x c++ -fpie -DPTROFS_64BIT',
+                       LINKFLAGS  = '-m64 -pie',
+                       LLASMFLAGS = '-m64 -inline-idiv -pic -ptrofs',
+                       LLVMFLAGS  = '-mtriple=x86_64-unknown-linux-gnu --relocation-model=pic'
+                      )
+        else:
+            base_param = '-no-pie -Wl,-Ttext-segment'
+            if not clean:
+                process = subprocess.Popen([env['CC'], '--help', '-v'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": env['ENV']['PATH']})
+                (stdout, stderr) = process.communicate()
+                if b'-Ttext-segment' not in stdout:
+                    base_param = '-Wl,--no-pie,--image-base'
+            env.Append(CCFLAGS    = '-m64 -x c++',
+                       LINKFLAGS  = '-m64 ' + base_param + ',0x10000000',
+                       LLASMFLAGS = '-m64 -inline-idiv',
+                       LLVMFLAGS  = '-mtriple=x86_64-unknown-linux-gnu'
+                      )
+    elif device.startswith('arm-'):
+        if prefer_llasm:
+            llasm_version = True
+        env.Append(ASFLAGS    = '-EL -I arm/',
+                   LLASMFLAGS = '',
+                   LLVMFLAGS  = ''
+                  )
+        # see arm/armconf.inc for explanation of these options (and others)
+        env.Append(ASFLAGS = '--defsym USE_R9=1 --defsym ALLOW_UNALIGNED_MEMORY_ACCESS=1')
+    elif device.startswith('arm64-'):
+        llasm_version = True
+        if prefer_ptrofs64:
+            use_pic = True
+            env.Append(CCFLAGS    = '-x c++ -fpie -DPTROFS_64BIT',
+                       LINKFLAGS  = '-pie',
+                       LLASMFLAGS = '-m64 -inline-idiv -pic -ptrofs',
+                       LLVMFLAGS  = '-mtriple=arm64-unknown-linux-gnu --relocation-model=pic'
+                      )
+        else:
+            env.Append(CCFLAGS    = '-x c++',
+                       LINKFLAGS  = '-Wl,-Ttext-segment,0x10000000',
+                       LLASMFLAGS = '-m64 -inline-idiv',
+                       LLVMFLAGS  = '-mtriple=arm64-unknown-linux-gnu'
+                      )
+    elif device.startswith('riscv64-'):
+        llasm_version = True
+        use_pic = True
+        env.Append(CCFLAGS    = '-x c++ -fpie -DPTROFS_64BIT',
+                   LINKFLAGS  = '-pie',
+                   LLASMFLAGS = '-m64 -inline-idiv -pic -ptrofs',
+                   LLVMFLAGS  = '-mtriple=riscv64-unknown-linux-gnu -mattr=+i,+m,+a,+f,+d,+zicsr,+zifencei,+c --relocation-model=pic'
+                  )
+elif device.endswith('-windows'):
+    if env['CC'] == 'cl':
+        env.Append(CCFLAGS   = '/Dmain=SDL_main /MD',
+                   LINKFLAGS = '/SUBSYSTEM:WINDOWS /NXCOMPAT /TSAWARE',
+                   LIBS      = ['SDL2main', 'SDL2_mixer', 'SDL2', 'zlib', 'user32', 'shell32']
+                  )
+    else:
+        env.Append(CCFLAGS   = '-Dmain=SDL_main',
+                   LINKFLAGS = '-mwindows -Wl,--nxcompat,--tsaware',
+                   LIBS      = ['mingw32', 'SDL2main', 'SDL2_mixer', 'SDL2', 'z']
+                  )
+
+    if device.startswith('pc-'):
+        if prefer_llasm:
+            llasm_version = True
+        if env['CC'] == 'cl':
+            env.Append(LINKFLAGS  = '/MACHINE:X86 /DYNAMICBASE:NO /FIXED',
+                       LLASMFLAGS = '-inline-idiv',
+                       LLVMFLAGS  = '-mtriple=i686-pc-windows-msvc'
+                      )
+        else:
+            env.Append(CCFLAGS    = '-m32',
+                       LINKFLAGS  = '-m32',
+                       LLASMFLAGS = '-inline-idiv',
+                       LLVMFLAGS  = '-mtriple=i686-pc-windows-gnu'
+                      )
+    elif device.startswith('pc64-'):
+        if prefer_llasm:
+            llasm_version = True
+        use_pic = True
+        if env['CC'] == 'cl':
+            env.Append(CCFLAGS   = '/TP',
+                       LINKFLAGS = '/MACHINE:X64 /LARGEADDRESSAWARE',
+                       LLASMFLAGS = '-m64 -inline-idiv',
+                       LLVMFLAGS  = '-mtriple=x86_64-pc-windows-msvc'
+                      )
+        else:
+            env.Append(CCFLAGS   = '-m64 -x c++',
+                       LINKFLAGS = '-m64',
+                       LLASMFLAGS = '-m64 -inline-idiv',
+                       LLVMFLAGS  = '-mtriple=x86_64-pc-windows-gnu'
+                      )
+        if prefer_llasm and prefer_ptrofs64:
+            if env['CC'] == 'cl':
+                env.Append(CCFLAGS   = '/DPTROFS_64BIT',
+                           LINKFLAGS = '/DYNAMICBASE /FIXED:NO /HIGHENTROPYVA',
+                           LLASMFLAGS = ' -ptrofs'
+                          )
+            else:
+                env.Append(CCFLAGS   = '-DPTROFS_64BIT',
+                           LINKFLAGS = '-Wl,--dynamicbase,--enable-reloc-section,--high-entropy-va',
+                           LLASMFLAGS = ' -ptrofs'
+                          )
+        else:
+            if env['CC'] == 'cl':
+                env.Append(LINKFLAGS = '/BASE:0x10000000 /DYNAMICBASE:NO /FIXED /HIGHENTROPYVA:NO')
+            else:
+                env.Append(LINKFLAGS = '-Wl,--image-base,0x10000000,--disable-dynamicbase,--disable-reloc-section,--disable-high-entropy-va')
+elif device.endswith('-darwin'):
+    llasm_version = True
+    use_pic = True
+    env.Append(FRAMEWORKPATH = ['/Library/Frameworks'],
+               FRAMEWORKS    = ['SDL2_mixer', 'SDL2'],
+               CPPPATH       = ['/Library/Frameworks/SDL2.framework/Headers', '/Library/Frameworks/SDL2_mixer.framework/Headers'],
+               LIBS          = ['pthread', 'm', 'dl']
+              )
+
+    if device.startswith('pc64-'):
+        if prefer_ptrofs64:
+            env.Append(CCFLAGS    = '-m64 -x c++ -std=c++11 -fpie -DPTROFS_64BIT',
+                       LINKFLAGS  = '-m64 -Wl,-pie',
+                       LLASMFLAGS = '-m64 -inline-idiv -pic -ptrofs',
+                       LLVMFLAGS  = '-mtriple=x86_64-apple-darwin --relocation-model=pic'
+                      )
+        else:
+            env.Append(CCFLAGS    = '-m64 -x c++ -std=c++11 -fno-PIE',
+                       LINKFLAGS  = '-m64 -Wl,-pagezero_size,0x110000,-no_pie',
+                       LLASMFLAGS = '-m64 -inline-idiv',
+                       LLVMFLAGS  = '-mtriple=x86_64-apple-darwin'
+                      )
+    elif device.startswith('arm64-'):
+        env.Append(CCFLAGS    = '-arch arm64 -x c++ -std=c++11 -fpie -DPTROFS_64BIT',
+                   LINKFLAGS  = '-arch arm64 -Wl,-pie',
+                   LLASMFLAGS = '-m64 -inline-idiv -pic -ptrofs',
+                   LLVMFLAGS  = '-mtriple=arm64-apple-darwin --relocation-model=pic'
+                  )
+elif device == 'pyra':
+    if prefer_llasm:
+        llasm_version = True
+    env.Append(CCFLAGS    = '-DPYRA -pipe -march=armv7ve+simd -mcpu=cortex-a15 -mtune=cortex-a15 -mfpu=neon-vfpv4 -mfloat-abi=hard -mthumb',
+               LINKFLAGS  = '-Wl,-z,noexecstack',
+               CPPPATH    = ['/usr/include/SDL2'],
+               LIBS       = ['SDL2_mixer', 'SDL2', 'pthread', 'm', 'dl'],
+               ASFLAGS    = '-EL -march=armv7ve -mcpu=cortex-a15 -mfpu=neon-vfpv4 -mfloat-abi=hard -I arm/',
+               LLASMFLAGS = '-inline-idiv',
+               LLVMFLAGS  = '-mtriple=thumbv7a-unknown-linux-eabi -mcpu=cortex-a15 -float-abi=hard'
+              )
+    # see arm/armconf.inc for explanation of these options (and others)
+    env.Append(ASFLAGS = '--defsym USE_R9=1 --defsym ALLOW_UNALIGNED_MEMORY_ACCESS=1')
+
+def get_compiler_version(compiler_path, env_path):
+    process = subprocess.Popen([compiler_path, '-dumpversion'], stdout=subprocess.PIPE, env={"PATH": env_path})
+    (stdout, stderr) = process.communicate()
+    if not stdout or stdout.isspace():
+        return None
+    version = stdout.strip().split(b'.')
+    return version
+
+def is_version_ge(version, comparand):
+    if version is None or comparand is None:
+        return False
+
+    for i in range(len(comparand)):
+        if i >= len(version):
+            component = 0
+        else:
+            component = int(version[i])
+        if int(comparand[i]) > component:
+            return False
+        if int(comparand[i]) < component:
+            return True
+    return True
+
+if not clean and env['CC'] != 'cl' and not use_pic:
+    compiler_version = get_compiler_version(env['CC'], env['ENV']['PATH'])
+    if is_version_ge(compiler_version, [3, 4]):
+        env.Append(CCFLAGS = '-fno-PIE')
+    if is_version_ge(compiler_version, [6]):
+        env.Append(LINKFLAGS = '-no-pie')
+
+display_objs = SConscript('display/SConscript', exports='device env')
+audio_objs = SConscript('audio/SConscript', exports='device env')
+input_objs = SConscript('input/SConscript', exports='device env')
+
+if llasm_version:
+    arch_objs = SConscript('llasm/SConscript', exports='env')
+elif device == 'pc-windows' or device == 'pc-linux':
+    arch_objs = SConscript('x86/SConscript', exports='device env')
+elif device == 'pc64-windows' or device == 'pc64-linux':
+    arch_objs = SConscript('x64/SConscript', exports='device env')
+else:
+    arch_objs = SConscript('arm/SConscript', exports='device env')
+
+
+env.Program('SR-Main', Glob('*.c') + display_objs + audio_objs + input_objs + arch_objs)

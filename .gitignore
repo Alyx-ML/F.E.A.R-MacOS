@@ -1,0 +1,13 @@
+# Game-derived or build output: never commit
+port/work/
+port/analysis/
+port/build/
+port/dist/
+port/toolchain/
+port/.pydeps/
+port/third_party/ldc/
+release/
+__pycache__/
+*.o
+*.dSYM/
+.DS_Store

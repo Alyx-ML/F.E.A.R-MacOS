@@ -1,0 +1,32 @@
+; Runtime helpers called by SRW-generated code (fixed guest image mode).
+; Implemented in port/runtime/tc_helpers.c. Registers are read/written through the CPU struct.
+
+func tc_read_fs $, offset
+funcv tc_write_fs $, offset, value
+funcv tc_shift32 $, index, value, count, op
+funcv tc_shift_part $, index, value, count, op, width, offset
+funcv tc_double_shift32 $, index, destination, source, count, right
+funcv tc_cmps32 $, mode
+funcv tc_cmps16 $, mode
+funcv tc_cpuid $
+funcv tc_rdtsc $
+funcv tc_unsupported_instruction $, address
+funcv tc_x87_load80 $, address
+funcv tc_x87_store80 $, address
+funcv tc_x87_atan $
+funcv tc_x87_clear $
+funcv tc_x87_exp2m1 $
+funcv tc_x87_misc $, op, reg
+funcv tc_x87_pi $
+funcv tc_x87_round $
+funcv tc_x87_scale $
+funcv tc_x87_sincos $
+
+; Native API import thunks: returns the guest return address after popping the call frame.
+func gp_import $, index
+funcv tc_mmx_emms $
+funcv tc_mmx_move $, mm, operand, mode
+funcv tc_mmx_op $, dst, src, mode, operation
+func tc_hook_is_command_on $, command
+func tc_hook_extremal_value $, command
+funcv tc_hook_note_cursor $, show
