@@ -16,6 +16,7 @@ cp "$PORT/build/fear-app" "$APP/Contents/MacOS/FEARNative"
 # SDL3 (game controllers) travels inside the app instead of being taken from Homebrew
 mkdir -p "$APP/Contents/Frameworks"
 cp "$(python3 -c 'import os;print(os.path.realpath("/opt/homebrew/lib/libSDL3.0.dylib"))')" "$APP/Contents/Frameworks/libSDL3.0.dylib"
+chmod u+w "$APP/Contents/Frameworks/libSDL3.0.dylib"
 install_name_tool -id @rpath/libSDL3.0.dylib "$APP/Contents/Frameworks/libSDL3.0.dylib"
 install_name_tool -change /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib @rpath/libSDL3.0.dylib "$APP/Contents/MacOS/FEARNative"
 install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/FEARNative"
@@ -62,6 +63,8 @@ cat > "$APP/Contents/Info.plist" <<'P'
 </dict></plist>
 P
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+chmod -R u+w "$APP"
+xattr -cr "$APP"      # extended attributes become ._ files in a zip and break the signature seal
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 echo built "$APP"
